@@ -12,6 +12,7 @@ It is a product of LLM (Claude Code) with a meatbag giving instructions and chec
 import argparse
 import os
 import sys
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Tuple
 import yaml
@@ -58,26 +59,28 @@ def get_date_range(days: int) -> Tuple[datetime, datetime]:
     return start_date, end_date
 
 
-def load_step_order_from_file() -> Dict[str, int]:
-    """Load step order from local list_of_steps.yaml file."""
+def load_steps_from_file() -> Dict[str, int]:
+    """Load steps from local list_of_steps.yaml file."""
     try:
         with open("list_of_steps.yaml", "r") as file:
             steps_list = yaml.safe_load(file)
 
-        # Create order mapping
-        step_order = {}
+        # Create mapping for step existence checking
+        step_mapping = {}
         for i, step_name in enumerate(steps_list):
-            step_order[step_name] = i
+            step_mapping[step_name] = i
 
-        print(f"Loaded {len(step_order)} steps from list_of_steps.yaml")
-        return step_order
+        print(f"Loaded {len(step_mapping)} steps from list_of_steps.yaml")
+        return step_mapping
 
     except Exception as e:
         print(f"Warning: Could not load list_of_steps.yaml: {e}")
         return {}
 
 
-def analyze_workflow_runs(github_client: Github, repo_path: str, days: int, show_progress: bool = True) -> Dict:
+def analyze_workflow_runs(
+    github_client: Github, repo_path: str, days: int, show_progress: bool = True
+) -> Dict:
     """Analyze GitHub Actions workflow runs for the specified time period."""
     try:
         repo = github_client.get_repo(repo_path)
@@ -100,23 +103,25 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int, show
             if run.name and run.name.startswith("Building on")
         ]
 
-        # Get step order from local YAML file
-        print("Reading step order from list_of_steps.yaml...")
-        workflow_step_order = load_step_order_from_file()
+        # Get steps from local YAML file
+        print("Reading steps from list_of_steps.yaml...")
+        workflow_steps = load_steps_from_file()
 
-        step_stats = {}
+        step_stats = OrderedDict()
 
-        # Initialize step_stats with all steps from the YAML file
-        for step_name in workflow_step_order:
+        # Initialize step_stats with all steps from the YAML file in order
+        for step_name in workflow_steps:
             step_stats[step_name] = {"success": 0, "failure": 0, "total": 0}
         processed_jobs = 0
 
         total_runs = len(workflow_runs)
         print(f"{total_runs} workflow runs found.")
-        
+
         for run_index, run in enumerate(workflow_runs, 1):
             if show_progress:
-                print(f"\rAnalyzing run {run_index}/{total_runs}...", end="", flush=True)
+                print(
+                    f"\rAnalyzing run {run_index}/{total_runs}...", end="", flush=True
+                )
             if run.status != "completed":
                 continue
 
@@ -142,12 +147,12 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int, show
                         step_stats[step.name]["success"] += 1
                     elif step.conclusion == "failure":
                         step_stats[step.name]["failure"] += 1
-        
+
         if show_progress:
             print()  # New line after progress indicator
         return {
             "step_stats": step_stats,
-            "workflow_step_order": workflow_step_order,
+            "workflow_steps": workflow_steps,
             "processed_jobs": processed_jobs,
             "date_range": (start_date, end_date),
         }
@@ -164,7 +169,6 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int, show
 def print_summary(analysis_result: Dict):
     """Print the summary of step execution statistics."""
     step_stats = analysis_result["step_stats"]
-    workflow_step_order = analysis_result["workflow_step_order"]
     processed_jobs = analysis_result["processed_jobs"]
     start_date, end_date = analysis_result["date_range"]
 
@@ -188,14 +192,8 @@ def print_summary(analysis_result: Dict):
     )
     print("-" * 60)
 
-    # Sort steps by the order defined in list_of_steps.yaml
-    def get_sort_key(step_item):
-        step_name = step_item[0]
-        return workflow_step_order.get(step_name, 999999)  # Use order from YAML file
-
-    sorted_steps = sorted(step_stats.items(), key=get_sort_key)
-
-    for step_name, stats in sorted_steps:
+    # Iterate through OrderedDict which maintains the order from YAML file
+    for step_name, stats in step_stats.items():
         total = stats["total"]
         success = stats["success"]
         failure = stats["failure"]
@@ -213,7 +211,9 @@ def main():
         github_token, repo_path = load_environment()
 
         github_client = Github(github_token)
-        analysis_result = analyze_workflow_runs(github_client, repo_path, args.days, show_progress=not args.noprogress)
+        analysis_result = analyze_workflow_runs(
+            github_client, repo_path, args.days, show_progress=not args.noprogress
+        )
         print_summary(analysis_result)
 
     except ValueError as e:
