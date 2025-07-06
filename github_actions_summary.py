@@ -107,19 +107,12 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> D
         for step_name in workflow_step_order:
             step_stats[step_name] = {"success": 0, "failure": 0, "total": 0}
         processed_jobs = 0
-        processed_runs = 0
 
-        # Process workflow runs with reasonable limit to avoid timeouts
-        runs_processed = 0
+        print(len(workflow_runs), "workflow runs found.")
         for run in workflow_runs:
-            runs_processed += 1
-            if runs_processed == 1:
-                print("Processing workflow runs...")
-
             if run.status != "completed":
                 continue
 
-            processed_runs += 1
             jobs = run.jobs()
 
             # Process only first job per run
@@ -144,16 +137,9 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> D
                             step_stats[step.name]["success"] += 1
                         elif step.conclusion == "failure":
                             step_stats[step.name]["failure"] += 1
-            else:
-                print(
-                    f"Skipping job {job.id} in run {run.id} due to completion time outside range."
-                )
-                print(f"{job.id} {job.completed_at}")
-
         return {
             "step_stats": step_stats,
             "workflow_step_order": workflow_step_order,
-            "processed_runs": processed_runs,
             "processed_jobs": processed_jobs,
             "date_range": (start_date, end_date),
         }
@@ -171,7 +157,6 @@ def print_summary(analysis_result: Dict):
     """Print the summary of step execution statistics."""
     step_stats = analysis_result["step_stats"]
     workflow_step_order = analysis_result["workflow_step_order"]
-    processed_runs = analysis_result["processed_runs"]
     processed_jobs = analysis_result["processed_jobs"]
     start_date, end_date = analysis_result["date_range"]
 
@@ -181,7 +166,6 @@ def print_summary(analysis_result: Dict):
     print(
         f"Analysis Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
     )
-    print(f"Processed Workflow Runs: {processed_runs}")
     print(f"Processed Jobs: {processed_jobs}")
     print()
 
