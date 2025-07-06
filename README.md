@@ -9,6 +9,7 @@ Analyze GitHub Actions workflow runs for a specified number of days and generate
 - Generates step execution success/failure statistics
 - Supports custom step ordering via YAML configuration
 - Provides detailed success rate reporting
+- Optional progress indicator (can be disabled with `--noprogress`)
 
 ## Installation
 
@@ -38,12 +39,16 @@ uv sync
 Run the analysis for the last N days:
 
 ```bash
-uv run github_actions_summary.py <days>
+uv run github_actions_summary.py <days> [--noprogress]
 ```
 
-Example:
+Examples:
 ```bash
+# Analyze last 7 days with progress indicator
 uv run github_actions_summary.py 7
+
+# Analyze last 7 days without progress indicator
+uv run github_actions_summary.py 7 --noprogress
 ```
 
 This will analyze GitHub Actions workflow runs from the last 7 days (excluding today, using UTC timezone) and display:

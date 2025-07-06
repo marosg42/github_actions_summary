@@ -29,6 +29,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "days", type=int, help="Number of days to analyze (excluding current day)"
     )
+    parser.add_argument(
+        "--noprogress", action="store_true", help="Disable progress indicator"
+    )
     return parser.parse_args()
 
 
@@ -74,7 +77,7 @@ def load_step_order_from_file() -> Dict[str, int]:
         return {}
 
 
-def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> Dict:
+def analyze_workflow_runs(github_client: Github, repo_path: str, days: int, show_progress: bool = True) -> Dict:
     """Analyze GitHub Actions workflow runs for the specified time period."""
     try:
         repo = github_client.get_repo(repo_path)
@@ -108,15 +111,22 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> D
             step_stats[step_name] = {"success": 0, "failure": 0, "total": 0}
         processed_jobs = 0
 
-        print(len(workflow_runs), "workflow runs found.")
-        for run in workflow_runs:
+        total_runs = len(workflow_runs)
+        print(f"{total_runs} workflow runs found.")
+        
+        for run_index, run in enumerate(workflow_runs, 1):
+            if show_progress:
+                print(f"\rAnalyzing run {run_index}/{total_runs}...", end="", flush=True)
             if run.status != "completed":
                 continue
 
             jobs = run.jobs()
 
             # Process only first job per run
-            job = jobs[0]
+            try:
+                job = jobs[0]
+            except IndexError:
+                continue
             if job.completed_at and start_date <= job.completed_at <= end_date:
                 processed_jobs += 1
 
@@ -132,6 +142,9 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> D
                         step_stats[step.name]["success"] += 1
                     elif step.conclusion == "failure":
                         step_stats[step.name]["failure"] += 1
+        
+        if show_progress:
+            print()  # New line after progress indicator
         return {
             "step_stats": step_stats,
             "workflow_step_order": workflow_step_order,
@@ -200,7 +213,7 @@ def main():
         github_token, repo_path = load_environment()
 
         github_client = Github(github_token)
-        analysis_result = analyze_workflow_runs(github_client, repo_path, args.days)
+        analysis_result = analyze_workflow_runs(github_client, repo_path, args.days, show_progress=not args.noprogress)
         print_summary(analysis_result)
 
     except ValueError as e:
