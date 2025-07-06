@@ -122,21 +122,16 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> D
 
                 # Analyze job steps
                 for step in job.steps:
-                    # Skip steps that were not executed (skipped steps)
+                    # Only include steps that are in our list of interest
+                    if step.name not in step_stats:
+                        continue
                     if step.conclusion is None or step.conclusion == "skipped":
                         continue
-
-                    # Only include steps that are in our list of interest
-                    if step.name not in workflow_step_order:
-                        continue
-
-                    # Update step statistics
-                    if step.name in step_stats:
-                        step_stats[step.name]["total"] += 1
-                        if step.conclusion == "success":
-                            step_stats[step.name]["success"] += 1
-                        elif step.conclusion == "failure":
-                            step_stats[step.name]["failure"] += 1
+                    step_stats[step.name]["total"] += 1
+                    if step.conclusion == "success":
+                        step_stats[step.name]["success"] += 1
+                    elif step.conclusion == "failure":
+                        step_stats[step.name]["failure"] += 1
         return {
             "step_stats": step_stats,
             "workflow_step_order": workflow_step_order,
