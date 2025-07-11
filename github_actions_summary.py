@@ -61,7 +61,9 @@ def get_date_range(days: int) -> Tuple[datetime, datetime]:
     return start_date, end_date
 
 
-def load_steps_from_file() -> Tuple[Dict[str, int], Dict[str, bool], Dict[str, str]]:
+def load_steps_from_file() -> (
+    Tuple[Dict[str, int], Dict[str, bool], Dict[str, str], Dict[str, bool]]
+):
     """Load steps from local list_of_steps.yaml file."""
     try:
         with open("list_of_steps.yaml", "r") as file:
@@ -77,6 +79,9 @@ def load_steps_from_file() -> Tuple[Dict[str, int], Dict[str, bool], Dict[str, s
             for step in data["steps"]
             if step.get("download_logs_on_failure", False)
         }
+        show_url_steps = {
+            step["name"]: step.get("show_url", False) for step in data["steps"]
+        }
 
         # Create mapping for step existence checking
         step_mapping = {}
@@ -84,11 +89,11 @@ def load_steps_from_file() -> Tuple[Dict[str, int], Dict[str, bool], Dict[str, s
             step_mapping[step_name] = i
 
         print(f"Loaded {len(step_mapping)} steps from list_of_steps.yaml")
-        return step_mapping, log_download_steps, search_strings
+        return step_mapping, log_download_steps, search_strings, show_url_steps
 
     except Exception as e:
         print(f"Warning: Could not load list_of_steps.yaml: {e}")
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
 
 def clean_logs_directory() -> None:
@@ -251,7 +256,9 @@ def analyze_workflow_runs(
 
         # Get steps from local YAML file
         print("Reading steps from list_of_steps.yaml...")
-        workflow_steps, log_download_steps, search_strings = load_steps_from_file()
+        workflow_steps, log_download_steps, search_strings, show_url_steps = (
+            load_steps_from_file()
+        )
 
         step_stats = OrderedDict()
 
@@ -293,6 +300,12 @@ def analyze_workflow_runs(
                         step_stats[step.name]["success"] += 1
                     elif step.conclusion == "failure":
                         step_stats[step.name]["failure"] += 1
+                        # Show URL if configured for this step
+                        if show_url_steps.get(step.name, False):
+                            step_url = f"https://github.com/{repo_path}/actions/runs/{run.id}/job/{job.id}#step:{step.number}:1"
+                            print(
+                                f"Failed step '{step.name}' in job '{job.name}': {step_url}"
+                            )
                         # Download logs if configured for this step
                         if log_download_steps.get(step.name, False):
                             search_string = search_strings.get(step.name, "")
