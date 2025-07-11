@@ -29,10 +29,19 @@ uv sync
 
 2. Create a `list_of_steps.yaml` file to define which steps to analyze and their order:
    ```yaml
-   - "Step Name 1"
-   - "Step Name 2"
-   - "Another Step"
+   steps:
+     - name: "Step Name 1"
+     - name: "Step Name 2"
+       download_logs_on_failure: true
+       search_string: "search-pattern-in-logs"
+       show_url: true
+     - name: "Another Step"
    ```
+
+   **Optional step parameters:**
+   - `download_logs_on_failure`: When `true`, automatically downloads the last 100 lines of logs before failure for this step
+   - `search_string`: When `download_logs_on_failure` is enabled, looks for this string in logs to find the relevant section before downloading
+   - `show_url`: When `true`, displays the direct URL to failed step execution in GitHub Actions UI
 
 ## Usage
 
@@ -63,6 +72,11 @@ The script generates a summary report showing:
 - Analysis period and scope
 - Step execution statistics table
 - Success rates for each monitored step
+
+**Additional output features:**
+- **Failed step URLs**: When `show_url: true` is configured for a step, direct links to failed step executions are displayed during analysis
+- **Log downloads**: When `download_logs_on_failure: true` is configured, failed step logs are automatically downloaded to the `failed_step_logs/` directory with filenames like: `{step_name}_run{run_id}_job{job_id}_{timestamp}.log`
+- **Log filtering**: Downloaded logs show the last 100 lines before failure, filtered to exclude lines containing `***`, and positioned relative to the specified `search_string`
 
 ## Requirements
 
