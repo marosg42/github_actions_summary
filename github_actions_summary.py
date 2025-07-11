@@ -12,10 +12,12 @@ It is a product of LLM (Claude Code) with a meatbag giving instructions and chec
 import argparse
 import os
 import sys
+import shutil
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Tuple
 import yaml
+import requests
 
 from github import Github
 from github.GithubException import GithubException
@@ -59,11 +61,22 @@ def get_date_range(days: int) -> Tuple[datetime, datetime]:
     return start_date, end_date
 
 
-def load_steps_from_file() -> Dict[str, int]:
+def load_steps_from_file() -> Tuple[Dict[str, int], Dict[str, bool], Dict[str, str]]:
     """Load steps from local list_of_steps.yaml file."""
     try:
         with open("list_of_steps.yaml", "r") as file:
-            steps_list = yaml.safe_load(file)
+            data = yaml.safe_load(file)
+
+        steps_list = [step["name"] for step in data["steps"]]
+        log_download_steps = {
+            step["name"]: step.get("download_logs_on_failure", False)
+            for step in data["steps"]
+        }
+        search_strings = {
+            step["name"]: step.get("search_string", "")
+            for step in data["steps"]
+            if step.get("download_logs_on_failure", False)
+        }
 
         # Create mapping for step existence checking
         step_mapping = {}
@@ -71,11 +84,141 @@ def load_steps_from_file() -> Dict[str, int]:
             step_mapping[step_name] = i
 
         print(f"Loaded {len(step_mapping)} steps from list_of_steps.yaml")
-        return step_mapping
+        return step_mapping, log_download_steps, search_strings
 
     except Exception as e:
         print(f"Warning: Could not load list_of_steps.yaml: {e}")
-        return {}
+        return {}, {}, {}
+
+
+def clean_logs_directory() -> None:
+    """Clean up any existing log files before starting analysis."""
+    logs_dir = "failed_step_logs"
+    if os.path.exists(logs_dir):
+        shutil.rmtree(logs_dir)
+        print(f"Cleaned up existing logs directory: {logs_dir}")
+
+
+def download_step_logs(
+    github_client: Github,
+    repo_path: str,
+    job,
+    step_name: str,
+    run_id: int,
+    job_id: int,
+    search_string: str,
+) -> None:
+    """Download the last 100 lines before failure for a failed step."""
+    try:
+        # Create logs directory if it doesn't exist
+        logs_dir = "failed_step_logs"
+        os.makedirs(logs_dir, exist_ok=True)
+
+        # Get the GitHub token from environment
+        github_token = os.getenv("GITHUB_TOKEN")
+        if not github_token:
+            print(
+                f"Cannot download logs for step '{step_name}': GITHUB_TOKEN not found"
+            )
+            return
+
+        # Use the GitHub API to get job logs
+        headers = {"Authorization": f"token {github_token}"}
+        logs_url = (
+            f"https://api.github.com/repos/{repo_path}/actions/jobs/{job_id}/logs"
+        )
+
+        response = requests.get(logs_url, headers=headers)
+        if response.status_code == 200:
+            # Parse the logs to find the search string and error
+            full_logs = response.text
+            lines = full_logs.split("\n")
+
+            # Find the search string in the logs
+            search_string_idx = None
+            for i, line in enumerate(lines):
+                if search_string in line:
+                    search_string_idx = i
+                    break
+
+            if search_string_idx is not None:
+                # Find the first "##[error]Process completed with exit code 1." after the search string
+                error_idx = None
+                for i in range(search_string_idx, len(lines)):
+                    if "##[error]Process completed with exit code 1." in lines[i]:
+                        error_idx = i
+                        break
+
+                if error_idx is not None:
+                    # Get 100 lines before the error, starting from after the search string
+                    start_idx = max(search_string_idx, error_idx - 100)
+                    relevant_lines = lines[start_idx:error_idx]
+
+                    # Filter out lines containing ***
+                    filtered_logs = [
+                        line for line in relevant_lines if "***" not in line
+                    ]
+
+                    # If we have less than 100 lines, try to get more from before the search string
+                    if len(filtered_logs) < 100 and start_idx > 0:
+                        additional_start = max(
+                            0, start_idx - (100 - len(filtered_logs))
+                        )
+                        additional_lines = lines[additional_start:start_idx]
+                        additional_filtered = [
+                            line for line in additional_lines if "***" not in line
+                        ]
+                        filtered_logs = additional_filtered + filtered_logs
+
+                    # Take last 100 lines
+                    last_100_lines = (
+                        filtered_logs[-100:]
+                        if len(filtered_logs) > 100
+                        else filtered_logs
+                    )
+
+                    # Generate filename with timestamp and run/job IDs
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    safe_step_name = step_name.replace(" ", "_").replace("/", "_")
+                    filename = (
+                        f"{safe_step_name}_run{run_id}_job{job_id}_{timestamp}.log"
+                    )
+                    filepath = os.path.join(logs_dir, filename)
+
+                    # Write logs to file
+                    with open(filepath, "w") as f:
+                        f.write(f"# Failed Step Logs: {step_name}\n")
+                        f.write(f"# Run ID: {run_id}\n")
+                        f.write(f"# Job ID: {job_id}\n")
+                        f.write(f"# Search String: {search_string}\n")
+                        f.write(f"# Downloaded: {datetime.now().isoformat()}\n")
+                        f.write(
+                            f"# Last {len(last_100_lines)} lines before failure:\n\n"
+                        )
+                        f.write("\n".join(last_100_lines))
+
+                    print(
+                        f"Downloaded logs for failed step '{step_name}' to {filepath}"
+                    )
+                else:
+                    # Search string found but no error pattern - fall back to URL
+                    run_url = f"https://github.com/{repo_path}/actions/runs/{run_id}"
+                    print(
+                        f"Found search string '{search_string}' but no error pattern for step '{step_name}'. Run URL: {run_url}"
+                    )
+            else:
+                # Search string not found - fall back to URL
+                run_url = f"https://github.com/{repo_path}/actions/runs/{run_id}"
+                print(
+                    f"Could not find search string '{search_string}' for step '{step_name}'. Run URL: {run_url}"
+                )
+        else:
+            print(
+                f"Failed to download logs for step '{step_name}': HTTP {response.status_code}"
+            )
+
+    except Exception as e:
+        print(f"Error downloading logs for step '{step_name}': {e}")
 
 
 def analyze_workflow_runs(
@@ -83,6 +226,9 @@ def analyze_workflow_runs(
 ) -> Dict:
     """Analyze GitHub Actions workflow runs for the specified time period."""
     try:
+        # Clean up any existing log files
+        clean_logs_directory()
+
         repo = github_client.get_repo(repo_path)
         start_date, end_date = get_date_range(days)
 
@@ -105,7 +251,7 @@ def analyze_workflow_runs(
 
         # Get steps from local YAML file
         print("Reading steps from list_of_steps.yaml...")
-        workflow_steps = load_steps_from_file()
+        workflow_steps, log_download_steps, search_strings = load_steps_from_file()
 
         step_stats = OrderedDict()
 
@@ -147,6 +293,18 @@ def analyze_workflow_runs(
                         step_stats[step.name]["success"] += 1
                     elif step.conclusion == "failure":
                         step_stats[step.name]["failure"] += 1
+                        # Download logs if configured for this step
+                        if log_download_steps.get(step.name, False):
+                            search_string = search_strings.get(step.name, "")
+                            download_step_logs(
+                                github_client,
+                                repo_path,
+                                job,
+                                step.name,
+                                run.id,
+                                job.id,
+                                search_string,
+                            )
 
         if show_progress:
             print()  # New line after progress indicator
