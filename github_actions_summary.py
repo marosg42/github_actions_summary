@@ -30,7 +30,9 @@ def parse_arguments() -> argparse.Namespace:
         description="Analyze GitHub Actions workflow runs for N days"
     )
     parser.add_argument(
-        "days", type=int, help="Number of days to analyze (excluding current day)"
+        "days",
+        type=int,
+        help="Number of days to analyze (excluding current day), or 0 for today only",
     )
     parser.add_argument(
         "--noprogress", action="store_true", help="Disable progress indicator"
@@ -54,10 +56,16 @@ def load_environment() -> Tuple[str, str]:
 
 
 def get_date_range(days: int) -> Tuple[datetime, datetime]:
-    """Calculate the date range for analysis (previous N days in UTC)."""
+    """Calculate the date range for analysis (previous N days in UTC, or today if days=0)."""
     now = datetime.now(timezone.utc)
-    end_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_date = end_date - timedelta(days=days)
+    if days == 0:
+        # For today: from start of today to current time
+        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = now
+    else:
+        # For previous N days: from N days ago to start of today
+        end_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date = end_date - timedelta(days=days)
     return start_date, end_date
 
 
