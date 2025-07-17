@@ -45,6 +45,8 @@ uv sync
 
 ## Usage
 
+### Main Analysis Script
+
 Run the analysis for the last N days:
 
 ```bash
@@ -65,6 +67,30 @@ This will analyze GitHub Actions workflow runs from the last 7 days (excluding t
 - Success/failure statistics for each step
 - Success rate percentages
 - Results sorted by the order defined in `list_of_steps.yaml`
+
+### Collect Versions Analyzer
+
+Analyze collect-versions retry successes in Setup Project Dir logs:
+
+```bash
+uv run collect_versions_analyzer.py <days>
+```
+
+Examples:
+```bash
+# Analyze last 7 days for collect-versions retries
+uv run collect_versions_analyzer.py 7
+
+# Analyze today only (days=0)
+uv run collect_versions_analyzer.py 0
+```
+
+This specialized tool:
+- Extracts logs from Setup Project Dir steps in workflow runs
+- Searches for collect-versions success messages that occurred after retry attempts (attempt > 1)
+- Shows both successful retry attempts and any failed attempts for context
+- Filters workflows by name pattern ("Building on" prefix)
+- Processes only executed (not skipped) Setup Project Dir steps
 
 ## Output
 
