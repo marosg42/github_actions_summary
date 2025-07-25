@@ -13,9 +13,10 @@ import argparse
 import os
 import sys
 import shutil
+import re
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 import yaml
 import requests
 
@@ -27,15 +28,18 @@ from dotenv import load_dotenv
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Analyze GitHub Actions workflow runs for N days"
+        description="Analyze GitHub Actions workflow runs for N days or specific date"
     )
     parser.add_argument(
         "days",
-        type=int,
-        help="Number of days to analyze (excluding current day), or 0 for today only",
+        type=str,
+        help="Number of days to analyze (excluding current day), 0 for today only, or date in YYYY-MM-DD format",
     )
     parser.add_argument(
         "--noprogress", action="store_true", help="Disable progress indicator"
+    )
+    parser.add_argument(
+        "--nolog", action="store_true", help="Don't save or delete failed step logs"
     )
     return parser.parse_args()
 
@@ -55,9 +59,39 @@ def load_environment() -> Tuple[str, str]:
     return github_token, repository_path
 
 
-def get_date_range(days: int) -> Tuple[datetime, datetime]:
-    """Calculate the date range for analysis (previous N days in UTC, or today if days=0)."""
+def parse_input_parameter(input_param: str) -> Union[int, datetime]:
+    """Parse input parameter to determine if it's a number of days or a specific date."""
+    # Check if it's a date in YYYY-MM-DD format
+    date_pattern = r'^\d{4}-\d{2}-\d{2}$'
+    if re.match(date_pattern, input_param):
+        try:
+            parsed_date = datetime.strptime(input_param, '%Y-%m-%d')
+            return parsed_date.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError(f"Invalid date format: {input_param}. Use YYYY-MM-DD format.")
+    
+    # Try to parse as integer (number of days)
+    try:
+        days = int(input_param)
+        if days < 0:
+            raise ValueError("Number of days must be non-negative")
+        return days
+    except ValueError:
+        raise ValueError(f"Input must be either a number of days or a date in YYYY-MM-DD format, got: {input_param}")
+
+
+def get_date_range(days_or_date: Union[int, datetime]) -> Tuple[datetime, datetime]:
+    """Calculate the date range for analysis (previous N days in UTC, specific date, or today if days=0)."""
     now = datetime.now(timezone.utc)
+    
+    if isinstance(days_or_date, datetime):
+        # For specific date: from midnight to midnight of next day in UTC
+        start_date = days_or_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = start_date + timedelta(days=1)
+        return start_date, end_date
+    
+    # Handle integer input (number of days)
+    days = days_or_date
     if days == 0:
         # For today: from start of today to current time
         start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -104,8 +138,11 @@ def load_steps_from_file() -> (
         return {}, {}, {}, {}
 
 
-def clean_logs_directory() -> None:
+def clean_logs_directory(enable_logs: bool = True) -> None:
     """Clean up any existing log files before starting analysis."""
+    if not enable_logs:
+        return
+    
     logs_dir = "failed_step_logs"
     if os.path.exists(logs_dir):
         shutil.rmtree(logs_dir)
@@ -120,8 +157,11 @@ def download_step_logs(
     run_id: int,
     job_id: int,
     search_string: str,
+    enable_logs: bool = True,
 ) -> None:
     """Download the last 100 lines before failure for a failed step."""
+    if not enable_logs:
+        return
     try:
         # Create logs directory if it doesn't exist
         logs_dir = "failed_step_logs"
@@ -235,15 +275,15 @@ def download_step_logs(
 
 
 def analyze_workflow_runs(
-    github_client: Github, repo_path: str, days: int, show_progress: bool = True
+    github_client: Github, repo_path: str, days_or_date: Union[int, datetime], show_progress: bool = True, enable_logs: bool = True
 ) -> Dict:
     """Analyze GitHub Actions workflow runs for the specified time period."""
     try:
         # Clean up any existing log files
-        clean_logs_directory()
+        clean_logs_directory(enable_logs)
 
         repo = github_client.get_repo(repo_path)
-        start_date, end_date = get_date_range(days)
+        start_date, end_date = get_date_range(days_or_date)
 
         print(
             f"Analyzing workflow runs from {start_date.isoformat()} to {end_date.isoformat()}"
@@ -325,6 +365,7 @@ def analyze_workflow_runs(
                                 run.id,
                                 job.id,
                                 search_string,
+                                enable_logs,
                             )
 
         if show_progress:
@@ -383,17 +424,83 @@ def print_summary(analysis_result: Dict):
         )
 
 
+def generate_summary_content(analysis_result: Dict) -> str:
+    """Generate the summary content as a string."""
+    step_stats = analysis_result["step_stats"]
+    processed_jobs = analysis_result["processed_jobs"]
+    start_date, end_date = analysis_result["date_range"]
+    
+    lines = []
+    lines.append("=" * 60)
+    lines.append("GITHUB ACTIONS WORKFLOW ANALYSIS SUMMARY")
+    lines.append("=" * 60)
+    lines.append(f"Analysis Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    lines.append(f"Processed Jobs: {processed_jobs}")
+    lines.append("")
+    
+    if not step_stats:
+        lines.append("No steps found in the specified time period.")
+        return "\n".join(lines)
+    
+    lines.append("STEP EXECUTION STATISTICS:")
+    lines.append("-" * 60)
+    lines.append(f"{'Step Name':<40} {'Total':<8} {'Success':<8} {'Failure':<8} {'Success %':<10}")
+    lines.append("-" * 60)
+    
+    for step_name, stats in step_stats.items():
+        total = stats["total"]
+        success = stats["success"]
+        failure = stats["failure"]
+        success_rate = (success / total * 100) if total > 0 else 0
+        
+        lines.append(f"{step_name[:39]:<40} {total:<8} {success:<8} {failure:<8} {success_rate:<10.1f}")
+    
+    return "\n".join(lines)
+
+
+def save_summary_to_file(analysis_result: Dict, input_param: Union[int, datetime]) -> None:
+    """Save the summary to a file in the summaries directory."""
+    # Create summaries directory if it doesn't exist
+    summaries_dir = "summaries"
+    os.makedirs(summaries_dir, exist_ok=True)
+    
+    # Generate filename based on input type
+    if isinstance(input_param, datetime):
+        # For date input: summary-YYYY-MM-DD.txt
+        filename = f"summary-{input_param.strftime('%Y-%m-%d')}.txt"
+    else:
+        # For days input: summary-startdate-enddate.txt
+        start_date, end_date = analysis_result["date_range"]
+        filename = f"summary-{start_date.strftime('%Y-%m-%d')}-{end_date.strftime('%Y-%m-%d')}.txt"
+    
+    filepath = os.path.join(summaries_dir, filename)
+    
+    # Generate and save summary content
+    summary_content = generate_summary_content(analysis_result)
+    
+    with open(filepath, 'w') as f:
+        f.write(summary_content)
+    
+    print(f"Summary saved to: {filepath}")
+
+
 def main():
     """Main function."""
     try:
         args = parse_arguments()
         github_token, repo_path = load_environment()
 
+        # Parse the input parameter (either days or date)
+        parsed_input = parse_input_parameter(args.days)
+
         github_client = Github(github_token)
         analysis_result = analyze_workflow_runs(
-            github_client, repo_path, args.days, show_progress=not args.noprogress
+            github_client, repo_path, parsed_input, show_progress=not args.noprogress, enable_logs=not args.nolog
         )
         print_summary(analysis_result)
+        
+        # Save summary to file
+        save_summary_to_file(analysis_result, parsed_input)
 
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)

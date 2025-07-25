@@ -47,11 +47,19 @@ uv sync
 
 ### Main Analysis Script
 
-Run the analysis for the last N days:
+Run the analysis for the last N days or a specific date:
 
 ```bash
-uv run github_actions_summary.py <days> [--noprogress]
+uv run github_actions_summary.py <days|date> [--noprogress] [--nolog]
 ```
+
+**Input formats:**
+- `<days>`: Number of days to analyze (integer)
+- `<date>`: Specific date in YYYY-MM-DD format
+
+**Options:**
+- `--noprogress`: Disable progress indicator
+- `--nolog`: Don't save or delete failed step logs
 
 Examples:
 ```bash
@@ -60,9 +68,15 @@ uv run github_actions_summary.py 7
 
 # Analyze last 7 days without progress indicator
 uv run github_actions_summary.py 7 --noprogress
+
+# Analyze specific date (2025-07-19)
+uv run github_actions_summary.py 2025-07-19
+
+# Analyze specific date without logs
+uv run github_actions_summary.py 2025-07-19 --nolog
 ```
 
-This will analyze GitHub Actions workflow runs from the last 7 days (excluding today, using UTC timezone) and display:
+This will analyze GitHub Actions workflow runs from the specified time period (using UTC timezone) and display:
 - Total number of processed runs and jobs
 - Success/failure statistics for each step
 - Success rate percentages
@@ -98,6 +112,11 @@ The script generates a summary report showing:
 - Analysis period and scope
 - Step execution statistics table
 - Success rates for each monitored step
+
+**Summary Files:**
+The analysis results are automatically saved to the `summaries/` directory:
+- For date input (e.g., `2025-07-19`): saved as `summary-2025-07-19.txt`
+- For days input (e.g., `7`): saved as `summary-<start-date>-<end-date>.txt`
 
 **Additional output features:**
 - **Failed step URLs**: When `show_url: true` is configured for a step, direct links to failed step executions are displayed during analysis
