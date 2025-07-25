@@ -180,7 +180,7 @@ def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> N
             except IndexError:
                 continue
 
-            if job.completed_at and start_date <= job.completed_at <= end_date:
+            if job.completed_at and start_date <= job.completed_at <= end_date and job.conclusion != "cancelled":
                 # Look for Setup Project Dir step that was actually executed (not skipped)
                 has_executed_setup_project_dir = False
                 for step in job.steps:
