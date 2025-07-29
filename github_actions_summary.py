@@ -418,9 +418,10 @@ def print_summary(analysis_result: Dict):
         success = stats["success"]
         failure = stats["failure"]
         success_rate = (success / total * 100) if total > 0 else 0
+        success_rate_str = f"{success_rate:.1f}" if total > 0 else "---"
 
         print(
-            f"{step_name[:39]:<40} {total:<8} {success:<8} {failure:<8} {success_rate:<10.1f}"
+            f"{step_name[:39]:<40} {total:<8} {success:<8} {failure:<8} {success_rate_str:<10}"
         )
 
 
@@ -452,8 +453,9 @@ def generate_summary_content(analysis_result: Dict) -> str:
         success = stats["success"]
         failure = stats["failure"]
         success_rate = (success / total * 100) if total > 0 else 0
+        success_rate_str = f"{success_rate:.1f}" if total > 0 else "---"
         
-        lines.append(f"{step_name[:39]:<40} {total:<8} {success:<8} {failure:<8} {success_rate:<10.1f}")
+        lines.append(f"{step_name[:39]:<40} {total:<8} {success:<8} {failure:<8} {success_rate_str:<10}")
     
     return "\n".join(lines)
 
