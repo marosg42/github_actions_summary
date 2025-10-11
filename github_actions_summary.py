@@ -346,7 +346,8 @@ def analyze_workflow_runs(
                     step_stats[step.name]["total"] += 1
                     if step.conclusion == "success":
                         step_stats[step.name]["success"] += 1
-                    elif step.conclusion == "failure":
+                    else:
+                        # Count anything that's not success as failure (includes "failure", "cancelled", etc.)
                         step_stats[step.name]["failure"] += 1
                         # Show URL if configured for this step
                         if show_url_steps.get(step.name, False):
