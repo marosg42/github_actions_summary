@@ -336,6 +336,9 @@ def analyze_workflow_runs(
             if job.completed_at and start_date <= job.completed_at <= end_date:
                 processed_jobs += 1
 
+                # Track if we need to add newline before first failure message
+                first_failure_in_run = True
+
                 # Analyze job steps
                 for step in job.steps:
                     # Only include steps that are in our list of interest
@@ -351,6 +354,10 @@ def analyze_workflow_runs(
                         step_stats[step.name]["failure"] += 1
                         # Show URL if configured for this step
                         if show_url_steps.get(step.name, False):
+                            # Add newline before first failure to separate from progress indicator
+                            if first_failure_in_run and show_progress:
+                                print()
+                                first_failure_in_run = False
                             step_url = f"https://github.com/{repo_path}/actions/runs/{run.id}/job/{job.id}#step:{step.number}:1"
                             print(
                                 f"Failed step '{step.name}' in job '{job.name}': {step_url}"
