@@ -87,24 +87,32 @@ This will analyze GitHub Actions workflow runs from the specified time period (u
 Analyze collect-versions retry successes in Setup Project Dir logs:
 
 ```bash
-uv run collect_versions_analyzer.py <days>
+uv run collect_versions_analyzer.py <days> [--no-streaming]
 ```
+
+**Options:**
+- `--no-streaming`: Disable streaming mode and download full logs (uses ~7x more bandwidth)
 
 Examples:
 ```bash
-# Analyze last 7 days for collect-versions retries
+# Analyze last 7 days for collect-versions retries (default: streaming mode)
 uv run collect_versions_analyzer.py 7
 
 # Analyze today only (days=0)
 uv run collect_versions_analyzer.py 0
+
+# Use full download mode instead of streaming
+uv run collect_versions_analyzer.py 7 --no-streaming
 ```
 
 This specialized tool:
 - Extracts logs from Setup Project Dir steps in workflow runs
+- Uses **streaming mode by default** to stop downloading after finding the relevant section (saves ~87% bandwidth)
 - Searches for collect-versions success messages that occurred after retry attempts (attempt > 1)
 - Shows both successful retry attempts and any failed attempts for context
 - Filters workflows by name pattern ("Building on" prefix)
 - Processes only executed (not skipped) Setup Project Dir steps
+- Reports total bandwidth used during analysis
 
 ## Output
 
