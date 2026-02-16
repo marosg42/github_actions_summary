@@ -24,9 +24,9 @@ def parse_arguments() -> argparse.Namespace:
         description="Extract workflow logs and search for Temporal report messages"
     )
     parser.add_argument(
-        "days",
-        type=int,
-        help="Number of days to analyze (excluding current day), or 0 for today only",
+        "days_or_date",
+        type=str,
+        help="Number of days to analyze (excluding current day), 0 for today, or specific date (YYYY-MM-DD)",
     )
     return parser.parse_args()
 
@@ -46,8 +46,35 @@ def load_environment() -> Tuple[str, str]:
     return github_token, repository_path
 
 
-def get_date_range(days: int) -> Tuple[datetime, datetime]:
-    """Calculate the date range for analysis (previous N days in UTC, or today if days=0)."""
+def get_date_range(days_or_date: str) -> Tuple[datetime, datetime]:
+    """Calculate the date range for analysis.
+    
+    Args:
+        days_or_date: Either number of days (0 for today, N for previous N days) 
+                     or specific date in YYYY-MM-DD format
+    
+    Returns:
+        Tuple of (start_date, end_date) in UTC
+    """
+    # Try to parse as a date first
+    try:
+        specific_date = datetime.strptime(days_or_date, "%Y-%m-%d")
+        # Set timezone to UTC
+        specific_date = specific_date.replace(tzinfo=timezone.utc)
+        # Return start and end of that specific day
+        start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return start_date, end_date
+    except ValueError:
+        # Not a date, treat as number of days
+        pass
+    
+    # Parse as number of days
+    try:
+        days = int(days_or_date)
+    except ValueError:
+        raise ValueError(f"Invalid argument: '{days_or_date}'. Must be a number or date in YYYY-MM-DD format")
+    
     now = datetime.now(timezone.utc)
     if days == 0:
         # For today: from start of today to current time
@@ -169,14 +196,14 @@ def extract_temporal_reports(repo_path: str, run_id: int, job_id: int) -> dict:
         }
 
 
-def analyze_workflow_runs(github_client: Github, repo_path: str, days: int) -> dict:
+def analyze_workflow_runs(github_client: Github, repo_path: str, days_or_date: str) -> dict:
     """Find workflow runs and extract Temporal report messages.
 
     Returns dict with bandwidth statistics.
     """
     try:
         repo = github_client.get_repo(repo_path)
-        start_date, end_date = get_date_range(days)
+        start_date, end_date = get_date_range(days_or_date)
 
         print(
             f"Analyzing workflow runs from {start_date.isoformat()} to {end_date.isoformat()}"
@@ -281,7 +308,7 @@ def main():
         github_token, repo_path = load_environment()
 
         github_client = Github(github_token)
-        analyze_workflow_runs(github_client, repo_path, args.days)
+        analyze_workflow_runs(github_client, repo_path, args.days_or_date)
 
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
