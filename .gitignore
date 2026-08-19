@@ -209,3 +209,7 @@ __marimo__/
 # local
 
 list_of_steps.yaml
+
+# ai_summary.py output
+results/
+tool_calls-*.txt
