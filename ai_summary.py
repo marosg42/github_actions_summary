@@ -9,11 +9,14 @@ Jobs where the step was skipped, or where the bot bailed out because it was
 provided with an unknown substrate, are ignored.
 
 Every shell tool call made by the bot is recorded verbatim, together with the
-context growth it caused, into a tool_calls-<timestamp>.txt file for later
-analysis.
+context growth it caused, into tools/<YYYY-MM-DD>/run-<run id>.txt files for
+later analysis, the day being the date the job completed. Runs that already have
+such a file are skipped entirely, so the script can be re-run over overlapping
+periods without downloading again.
 """
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -35,6 +38,11 @@ SKIP_MARKER = "OPENROUTER_API_KEY not set; skipping AI failure analysis"
 
 ARTIFACT_PREFIX = "generated/happy-bot/"
 RESULTS_DIR = "results"
+TOOLS_DIR = "tools"
+
+# Runs are listed by creation date while jobs are selected by completion date,
+# so the run query reaches this many days before the requested window.
+RUN_LOOKBACK_DAYS = 2
 
 UUID_PATTERN = re.compile(
     r"^\s*(?:JOB_)?UUID:\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
@@ -45,8 +53,16 @@ TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s?
 SHELL_CALL_PATTERN = re.compile(r"^\[tool_call\]\s*shell\((.*)\)\s*$")
 TOOL_CALL_PATTERN = re.compile(r"^\[tool_call\]\s*([A-Za-z_][A-Za-z0-9_]*)\(")
 TOOL_RESULT_PATTERN = re.compile(r"^\[tool_result\]\s*([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
+RECORDED_CALLS_PATTERN = re.compile(r"SHELL_CALLS_RECORDED\s+(\d+)")
+# Two log formats exist: older runs print an estimated context size
+# ("N msgs, ~N tok est (N chars)"), newer ones dropped the estimate
+# ("N msgs (N chars); call used N prompt + N completion tok") and the prompt
+# token count of the call is used as the context size instead.
 CONTEXT_PATTERN = re.compile(
-    r"^\[context\][^:]*:\s*([\d,]+)\s*msgs,\s*~([\d,]+)\s*tok est\s*\(([\d,]+)\s*chars\)"
+    r"^\[context\][^:]*:\s*([\d,]+)\s*msgs"
+    r"(?:,\s*~([\d,]+)\s*tok est)?"
+    r"\s*\(([\d,]+)\s*chars\)"
+    r"(?:.*?\bused\s+([\d,]+)\s*prompt)?"
 )
 
 
@@ -66,10 +82,16 @@ def parse_arguments() -> argparse.Namespace:
         help="Also print the statistics block of each individual job",
     )
     parser.add_argument(
-        "--output",
-        metavar="FILE",
-        help="Where to write the recorded shell calls "
-        "(default: tool_calls-<timestamp>.txt in the current directory)",
+        "--tools-dir",
+        metavar="DIR",
+        default=TOOLS_DIR,
+        help="Directory holding the recorded shell calls, one "
+        f"<DIR>/YYYY-MM-DD/run-<run id>.txt file per run (default: {TOOLS_DIR})",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download runs even if their shell call file already exists",
     )
     parser.add_argument(
         "--results-dir",
@@ -267,7 +289,8 @@ def extract_shell_calls(step_lines: list) -> list:
             continue
 
         messages = int(context_match.group(1).replace(",", ""))
-        tokens = int(context_match.group(2).replace(",", ""))
+        estimate = context_match.group(2) or context_match.group(4)
+        tokens = int(estimate.replace(",", "")) if estimate else 0
         chars = int(context_match.group(3).replace(",", ""))
 
         for position, call in enumerate(pending):
@@ -324,11 +347,15 @@ def list_artifacts(uuid: str, container_url: str) -> list:
 
 def download_artifacts(uuid: str, results_dir: str, container_url: str) -> dict:
     """Download the happy-bot artifacts of a run into results/<uuid>/."""
+    target_dir = os.path.join(results_dir, uuid)
+    existing = sorted(os.listdir(target_dir)) if os.path.isdir(target_dir) else []
+    if existing:
+        return {"downloaded": 0, "failed": 0, "files": existing}
+
     objects = list_artifacts(uuid, container_url)
     if not objects:
         return {"downloaded": 0, "failed": 0, "files": []}
 
-    target_dir = os.path.join(results_dir, uuid)
     os.makedirs(target_dir, exist_ok=True)
 
     downloaded = 0
@@ -479,9 +506,66 @@ def print_job_details(run, job, substrate: str, stats: dict) -> None:
     print(f"  Follow-up rounds: {stats.get('followup_rounds', 0)}")
 
 
+def run_file_path(tools_dir: str, day: str, run_id: int) -> str:
+    """Return the path of the shell call file of a run for a given day."""
+    return os.path.join(tools_dir, day, f"run-{run_id}.txt")
+
+
+def run_cache_path(tools_dir: str, day: str, run_id: int) -> str:
+    """Return the path of the parsed statistics cache of a run for a given day."""
+    return os.path.join(tools_dir, day, f"run-{run_id}.json")
+
+
+def write_run_cache(path: str, stats: dict) -> None:
+    """Store the parsed statistics of a run so later re-runs can reuse them.
+
+    The verbatim shell calls live in the companion .txt file, so they are left
+    out of the cache.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+    with open(path, "w") as handle:
+        json.dump(
+            {key: value for key, value in stats.items() if key != "shell_calls"},
+            handle,
+            indent=2,
+        )
+
+
+def count_recorded_calls(tools_dir: str, run_id: int) -> int:
+    """Return how many shell calls the already written file of a run holds."""
+    matches = glob.glob(os.path.join(tools_dir, "*", f"run-{run_id}.txt"))
+    if not matches:
+        return 0
+
+    try:
+        with open(matches[0]) as handle:
+            return sum(
+                int(match.group(1))
+                for match in RECORDED_CALLS_PATTERN.finditer(handle.read())
+            )
+    except (OSError, ValueError):
+        return 0
+
+
+def read_cached_run(tools_dir: str, run_id: int) -> Optional[dict]:
+    """Return the cached statistics of an already downloaded run, if any."""
+    matches = glob.glob(os.path.join(tools_dir, "*", f"run-{run_id}.json"))
+    if not matches:
+        return None
+
+    try:
+        with open(matches[0]) as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def write_shell_calls(collected: list, path: str) -> int:
-    """Write every recorded shell call verbatim to a text file."""
+    """Write every recorded shell call of a single run verbatim to a text file."""
     total = 0
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
     with open(path, "w") as handle:
         handle.write(
@@ -671,8 +755,9 @@ def analyze_workflow_runs(
     days_or_date: str,
     verbose: bool,
     swift_container_url: str,
-    output: Optional[str] = None,
+    tools_dir: str = TOOLS_DIR,
     results_dir: str = RESULTS_DIR,
+    force: bool = False,
 ) -> dict:
     """Find workflow runs and collect AI failure analysis statistics."""
     try:
@@ -680,12 +765,17 @@ def analyze_workflow_runs(
         start_date, end_date = get_date_range(days_or_date)
 
         print(
-            f"Analyzing workflow runs from {start_date.isoformat()} to {end_date.isoformat()}"
+            f"Analyzing jobs completed from {start_date.isoformat()} to {end_date.isoformat()}"
         )
+
+        # Runs are listed by creation date, but jobs are selected by completion
+        # date, so look further back to catch runs that started earlier and
+        # finished inside the window.
+        query_start = start_date - timedelta(days=RUN_LOOKBACK_DAYS)
 
         all_workflow_runs = repo.get_workflow_runs(
             status="completed",
-            created=f"{start_date.isoformat()}..{end_date.isoformat()}",
+            created=f"{query_start.isoformat()}..{end_date.isoformat()}",
         )
 
         workflow_runs = [
@@ -701,12 +791,27 @@ def analyze_workflow_runs(
         collected = []
         counters = Counter()
         total_bytes = 0
+        written_files = 0
+        written_calls = 0
+        reused_calls = 0
 
         for run_index, run in enumerate(workflow_runs, 1):
             print(f"\rProcessing run {run_index}/{total_runs}...", end="", flush=True)
 
             if run.status != "completed":
                 continue
+
+            if not force:
+                cached = read_cached_run(tools_dir, run.id)
+                if cached is not None:
+                    completed_at = datetime.fromisoformat(cached["completed_at"])
+                    if not start_date <= completed_at <= end_date:
+                        continue
+                    counters["already_downloaded"] += 1
+                    counters["with_step"] += 1
+                    reused_calls += count_recorded_calls(tools_dir, run.id)
+                    collected.append(cached)
+                    continue
 
             for job in run.jobs():
                 if job.conclusion == "cancelled":
@@ -724,14 +829,14 @@ def analyze_workflow_runs(
 
                 if step_conclusion == "skipped":
                     counters["skipped"] += 1
-                    continue
+                    break
 
                 result = analyze_job_logs(repo_path, job.id)
                 total_bytes += result["bytes_downloaded"]
 
                 if result["status"] != "ok":
                     counters[result["status"]] += 1
-                    continue
+                    break
 
                 stats = result["stats"]
                 stats["job_url"] = job.html_url
@@ -739,9 +844,7 @@ def analyze_workflow_runs(
                 stats["job_id"] = job.id
                 stats["substrate"] = result["substrate"]
                 stats["uuid"] = result["uuid"]
-                stats["completed_at"] = (
-                    job.completed_at.isoformat() if job.completed_at else None
-                )
+                stats["completed_at"] = job.completed_at.isoformat()
                 collected.append(stats)
 
                 if result["uuid"]:
@@ -760,14 +863,44 @@ def analyze_workflow_runs(
                 if verbose:
                     print_job_details(run, job, result["substrate"], stats)
 
+                # Files are grouped by the day the job completed, regardless of
+                # when its run started.
+                day = job.completed_at.strftime("%Y-%m-%d")
+                written_calls += write_shell_calls(
+                    [stats], run_file_path(tools_dir, day, run.id)
+                )
+                written_files += 1
+                write_run_cache(run_cache_path(tools_dir, day, run.id), stats)
+
+                # The step only ever runs in the first job of a run.
+                break
+
         print(f"\n\nProcessed {counters['with_step']} jobs containing the step.")
         print_summary(collected, counters, total_bytes)
 
-        if collected:
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            path = output or f"tool_calls-{timestamp}.txt"
-            written = write_shell_calls(collected, path)
-            print(f"\nRecorded {written:,} shell calls to {path}")
+        if counters["already_downloaded"]:
+            print(
+                f"\nReused {counters['already_downloaded']} runs already present "
+                f"in {tools_dir}/ (use --force to download them again)"
+            )
+
+        run_files = written_files + counters["already_downloaded"]
+        if run_files:
+            print(
+                f"\nRecorded {written_calls + reused_calls:,} shell calls in "
+                f"{run_files} run files under {tools_dir}/"
+            )
+            if written_files and counters["already_downloaded"]:
+                print(
+                    f"  Newly downloaded: {written_calls:,} calls in "
+                    f"{written_files} files"
+                )
+                print(
+                    f"  Reused from cache: {reused_calls:,} calls in "
+                    f"{counters['already_downloaded']} files"
+                )
+
+        if written_files:
             print(
                 f"Downloaded {counters['artifacts_downloaded']} happy-bot files for "
                 f"{counters['runs_with_artifacts']} runs into {results_dir}/"
@@ -801,8 +934,9 @@ def main():
             args.days_or_date,
             args.verbose,
             swift_container_url,
-            args.output,
+            args.tools_dir,
             args.results_dir,
+            args.force,
         )
 
     except ValueError as e:
