@@ -212,4 +212,5 @@ list_of_steps.yaml
 
 # ai_summary.py output
 results/
+tools/
 tool_calls-*.txt
