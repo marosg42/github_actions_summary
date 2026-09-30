@@ -53,6 +53,9 @@ TIMESTAMP_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s?
 SHELL_CALL_PATTERN = re.compile(r"^\[tool_call\]\s*shell\((.*)\)\s*$")
 TOOL_CALL_PATTERN = re.compile(r"^\[tool_call\]\s*([A-Za-z_][A-Za-z0-9_]*)\(")
 TOOL_RESULT_PATTERN = re.compile(r"^\[tool_result\]\s*([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
+# The bot announces itself once per run, e.g.
+# "[version] happy_bot main@5e211b8f3ae7".
+BOT_VERSION_PATTERN = re.compile(r"^\[version\]\s*(\S+)\s+(\S+)\s*$")
 RECORDED_CALLS_PATTERN = re.compile(r"SHELL_CALLS_RECORDED\s+(\d+)")
 # Two log formats exist: older runs print an estimated context size
 # ("N msgs, ~N tok est (N chars)"), newer ones dropped the estimate
@@ -319,6 +322,19 @@ def extract_shell_calls(step_lines: list) -> list:
     return records
 
 
+def extract_bot_version(step_lines: list) -> Tuple[Optional[str], Optional[str]]:
+    """Return the (name, version) of the bot announced by its [version] line.
+
+    The version is the ``<branch>@<commit>`` string printed right after the bot
+    name; runs made by older bots that do not print the line yield (None, None).
+    """
+    for line in step_lines:
+        match = BOT_VERSION_PATTERN.match(line.strip())
+        if match:
+            return match.group(1), match.group(2)
+    return None, None
+
+
 def extract_weebl_uuid(log_text: str) -> Optional[str]:
     """Return the weebl job UUID announced in the workflow log."""
     for raw_line in log_text.splitlines():
@@ -456,6 +472,7 @@ def analyze_job_logs(repo_path: str, job_id: int) -> dict:
 
     result["status"] = "ok"
     result["stats"] = stats
+    stats["bot_name"], stats["bot_version"] = extract_bot_version(step_lines)
     stats["shell_calls"] = extract_shell_calls(step_lines)
     return result
 
@@ -479,6 +496,10 @@ def print_job_details(run, job, substrate: str, stats: dict) -> None:
     if job.completed_at:
         print(f"  Completed at    : {job.completed_at.isoformat()}")
     print("Run statistics")
+    print(
+        f"  Bot version     : {stats.get('bot_name') or 'n/a'} "
+        f"{stats.get('bot_version') or 'n/a'}"
+    )
     print(f"  Terminal state  : {stats.get('terminal_state', 'n/a')}")
     print(f"  Duration        : {stats.get('duration', 0):.1f}s")
     print(
@@ -586,6 +607,10 @@ def write_shell_calls(collected: list, path: str) -> int:
             handle.write(f"URL {stats['job_url']}\n")
             handle.write(f"WEEBL_UUID {stats.get('uuid') or 'unknown'}\n")
             handle.write(f"SUBSTRATE {stats.get('substrate') or 'unknown'}\n")
+            handle.write(
+                f"BOT {stats.get('bot_name') or 'unknown'} "
+                f"{stats.get('bot_version') or 'unknown'}\n"
+            )
             handle.write(f"COMPLETED_AT {stats.get('completed_at') or 'unknown'}\n")
             handle.write(
                 f"RUN_DURATION {stats.get('duration', 0):.1f}s "
@@ -718,6 +743,16 @@ def print_summary(collected: list, counters: Counter, total_bytes: int) -> None:
     print(f"{'-' * 70}")
     for model, count in models.most_common():
         print(f"  {model}: {count}")
+
+    versions = Counter(
+        f"{s.get('bot_name') or 'unknown'} {s.get('bot_version') or 'unknown'}"
+        for s in collected
+    )
+    print(f"\n{'-' * 70}")
+    print("Bot versions")
+    print(f"{'-' * 70}")
+    for version, count in versions.most_common():
+        print(f"  {version:<30}: {count} ({count / len(collected) * 100:.1f}%)")
 
     tools = Counter()
     for stats in collected:
